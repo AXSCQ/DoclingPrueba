@@ -1,2 +1,5 @@
 docling
 python-dotenv
+openai
+python-dotenv
+langchain
