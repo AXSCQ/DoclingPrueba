@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from pdf_processor import PDFProcessor
 import re
+from typing import List
 
 # Cargar variables de entorno
 load_dotenv()
@@ -86,6 +87,44 @@ class PDFChatBot:
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=1000
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            return f"Error al procesar la pregunta: {str(e)}"
+
+    def ask_specific(self, question: str, selected_pdfs: List[str]):
+        """Responde preguntas basadas en PDFs específicos"""
+        try:
+            # Obtener solo los contextos de los PDFs seleccionados
+            contexts = self.pdf_processor.get_specific_contexts(selected_pdfs)
+            
+            if not contexts:
+                return "No se encontraron los PDFs seleccionados."
+
+            relevant_context = []
+            for context in contexts:
+                relevant_content = self.find_relevant_sections(question, context['content'])
+                context_piece = {
+                    'ley_nro': context['metadata']['ley_nro'],
+                    'titulo': context['metadata']['titulo'],
+                    'contenido_relevante': relevant_content
+                }
+                relevant_context.append(str(context_piece))
+            
+            context_text = "\n\n".join(relevant_context)
+            prompt = "Basándote en la siguiente información sobre las leyes seleccionadas:\n"
+            prompt += context_text + "\n\n"
+            prompt += f"Pregunta: {question}\n\n"
+            prompt += "Por favor, proporciona una respuesta detallada basada en la información disponible."
+            
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "Eres un asistente experto en analizar documentos legales."},
+                    {"role": "user", "content": prompt}
+                ]
             )
             
             return response.choices[0].message.content

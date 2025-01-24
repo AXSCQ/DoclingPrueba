@@ -101,9 +101,8 @@ class PDFProcessor:
         from docling.document_converter import DocumentConverter
         
         for pdf_file in pdf_files:
-            context_path = self.context_dir / f"PL-No-{pdf_file['ley_nro']}.json"
+            context_path = self.context_dir / f"PL-No-{pdf_file['ley_nro']}2024-2025.json"
             
-            # Siempre procesar el PDF para asegurar contenido actualizado
             print(f"🔄 Procesando PL No {pdf_file['ley_nro']}...")
             try:
                 converter = DocumentConverter()
@@ -115,7 +114,6 @@ class PDFProcessor:
                     'last_updated': str(Path(pdf_file['pdf_path']).stat().st_mtime)
                 }
                 
-                # Guardar contexto
                 with open(context_path, 'w', encoding='utf-8') as f:
                     json.dump(context, f, ensure_ascii=False, indent=2)
                 print(f"✅ Procesado: {pdf_file['ley_nro']}")
@@ -132,4 +130,67 @@ class PDFProcessor:
                     contexts.append(json.load(f))
             except Exception as e:
                 print(f"❌ Error leyendo contexto {context_file}: {str(e)}")
+        return contexts
+
+    def get_available_pdfs(self) -> List[Dict]:
+        """Retorna lista de PDFs disponibles con metadata"""
+        try:
+            available_pdfs = []
+            print("\n🔍 Buscando PDFs en:", self.pdfs_dir)
+            
+            # Listar todos los archivos PDF con el nuevo patrón
+            pdf_files = list(self.pdfs_dir.glob("PL-PLNo*.pdf"))
+            print(f"📁 PDFs encontrados: {[pdf.name for pdf in pdf_files]}")
+            
+            # Listar todos los archivos de contexto
+            context_files = list(self.context_dir.glob("PL-No-*.json"))
+            print(f"📄 Contextos encontrados: {[ctx.name for ctx in context_files]}")
+            
+            for pdf_file in pdf_files:
+                try:
+                    # Extraer número de ley del nuevo formato
+                    ley_nro = pdf_file.stem.replace("PL-PLNo", "").split("-")[0]
+                    print(f"📌 Procesando ley número: {ley_nro}")
+                    
+                    # Buscar contexto correspondiente (formato antiguo)
+                    context_file = self.context_dir / f"PL-No-{ley_nro}2024-2025.json"
+                    print(f"🔎 Buscando contexto: {context_file}")
+                    
+                    if context_file.exists():
+                        print(f"✅ Contexto encontrado para {pdf_file.name}")
+                        with open(context_file, 'r', encoding='utf-8') as f:
+                            context = json.load(f)
+                            available_pdfs.append({
+                                'ley_nro': ley_nro,
+                                'titulo': context['metadata']['titulo'],
+                                'descripcion': context['metadata']['descripcion'],
+                                'pdf_url': str(pdf_file)
+                            })
+                    else:
+                        print(f"❌ No se encontró contexto para {pdf_file.name}")
+                
+                except Exception as e:
+                    print(f"❌ Error procesando {pdf_file.name}: {str(e)}")
+                    continue
+            
+            print(f"\n📚 Total PDFs disponibles: {len(available_pdfs)}")
+            if len(available_pdfs) == 0:
+                print("⚠️  No se encontraron PDFs con sus contextos correspondientes")
+            return available_pdfs
+            
+        except Exception as e:
+            print(f"❌ Error general en get_available_pdfs: {str(e)}")
+            return []
+
+    def get_specific_contexts(self, ley_numbers: List[str]) -> List[Dict]:
+        """Retorna contextos específicos basados en números de ley"""
+        contexts = []
+        for ley_nro in ley_numbers:
+            context_path = self.context_dir / f"PL-No-{ley_nro}2024-2025.json"
+            if context_path.exists():
+                try:
+                    with open(context_path, 'r', encoding='utf-8') as f:
+                        contexts.append(json.load(f))
+                except Exception as e:
+                    print(f"❌ Error leyendo contexto {context_path}: {str(e)}")
         return contexts 
