@@ -2,6 +2,9 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 from pdf_processor import PDFProcessor
+import requests
+from config import get_db
+from models import LawDocument
 import re
 from typing import List
 
@@ -15,20 +18,32 @@ class PDFChatBot:
         self.update_laws_context()
         
     def update_laws_context(self):
-        """Actualiza el contexto de leyes"""
+        """Actualiza el contexto de leyes desde la API a la base de datos"""
         print("🔄 Actualizando contexto de leyes...")
         api_url = "https://diputados.gob.bo/wp-json/wp/v2/ley?estado_de_ley=7&page=1&per_page=100&acf_format=standard"
         
-        # Descargar PDFs (limitado a 3)
-        pdf_files = self.pdf_processor.download_pdfs_from_api(api_url, limit=3)
-        
-        # Procesar PDFs
-        self.pdf_processor.process_pdfs_with_docling(pdf_files)
-        
-        # Cargar contextos
-        self.laws_context = self.pdf_processor.get_all_contexts()
-        print(f"✅ Contexto actualizado. {len(self.laws_context)} leyes procesadas.")
-    
+        try:
+            # Obtener datos de la API
+            response = requests.get(api_url)
+            data = response.json()[:5]  # Limitamos a 5 PDFs
+            
+            # Obtener sesión de DB
+            db = next(get_db())
+            
+            for item in data:
+                if 'acf' in item and 'archivo_ley' in item['acf']:
+                    # Procesar PDF y guardar en DB
+                    self.pdf_processor.process_pdf(
+                        pdf_url=item['acf']['archivo_ley'],
+                        metadata=item['acf'],
+                        db=db
+                    )
+            
+            print("✅ Contexto actualizado en la base de datos")
+            
+        except Exception as e:
+            print(f"❌ Error actualizando contexto: {str(e)}")
+
     def find_relevant_sections(self, question: str, content: str, chunk_size: int = 1000) -> str:
         """
         Busca secciones relevantes del contenido basado en la pregunta.
@@ -97,28 +112,37 @@ class PDFChatBot:
     def ask_specific(self, question: str, selected_pdfs: List[str]):
         """Responde preguntas basadas en PDFs específicos"""
         try:
-            # Obtener solo los contextos de los PDFs seleccionados
-            contexts = self.pdf_processor.get_specific_contexts(selected_pdfs)
+            db = next(get_db())
+            relevant_laws = []
             
-            if not contexts:
-                return "No se encontraron los PDFs seleccionados."
-
-            relevant_context = []
-            for context in contexts:
-                relevant_content = self.find_relevant_sections(question, context['content'])
-                context_piece = {
-                    'ley_nro': context['metadata']['ley_nro'],
-                    'titulo': context['metadata']['titulo'],
-                    'contenido_relevante': relevant_content
-                }
-                relevant_context.append(str(context_piece))
+            # Buscar documentos en la base de datos
+            for law_number in selected_pdfs:
+                law = db.query(LawDocument).filter_by(law_number=law_number).first()
+                if law:
+                    relevant_content = self.find_relevant_sections(question, law.content)
+                    relevant_laws.append({
+                        'law_number': law.law_number,
+                        'title': law.title,
+                        'content': relevant_content
+                    })
             
-            context_text = "\n\n".join(relevant_context)
-            prompt = "Basándote en la siguiente información sobre las leyes seleccionadas:\n"
-            prompt += context_text + "\n\n"
-            prompt += f"Pregunta: {question}\n\n"
-            prompt += "Por favor, proporciona una respuesta detallada basada en la información disponible."
+            if not relevant_laws:
+                return "No se encontraron los documentos seleccionados."
             
+            # Construir el prompt
+            context_text = "\n\n".join([
+                f"Ley {law['law_number']}: {law['title']}\n{law['content']}"
+                for law in relevant_laws
+            ])
+            
+            prompt = (
+                "Basándote en la siguiente información sobre las leyes seleccionadas:\n"
+                f"{context_text}\n\n"
+                f"Pregunta: {question}\n\n"
+                "Por favor, proporciona una respuesta detallada basada en la información disponible."
+            )
+            
+            # Obtener respuesta de OpenAI
             response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
@@ -130,6 +154,7 @@ class PDFChatBot:
             return response.choices[0].message.content
             
         except Exception as e:
+            print(f"❌ Error en ask_specific: {str(e)}")
             return f"Error al procesar la pregunta: {str(e)}"
 
 def main():

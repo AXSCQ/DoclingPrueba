@@ -4,6 +4,10 @@ import json
 from typing import List, Dict, Set
 from pathlib import Path
 import re
+from sqlalchemy.orm import Session
+from models import LawDocument
+from config import get_db
+from docling.document_converter import DocumentConverter  # Importación correcta de docling
 
 class PDFProcessor:
     def __init__(self, storage_dir: str = "storage"):
@@ -37,12 +41,12 @@ class PDFProcessor:
                 print(f"🗑️ Eliminando contexto obsoleto: {context_file.name}")
                 context_file.unlink()
 
-    def download_pdfs_from_api(self, api_url: str, limit: int = 3) -> List[Dict]:
+    def download_pdfs_from_api(self, api_url: str, limit: int = 5) -> List[Dict]:
         """
         Descarga PDFs de la API y retorna metadata
         Args:
             api_url: URL de la API
-            limit: Número máximo de PDFs a descargar (default: 3)
+            limit: Número máximo de PDFs a descargar (default: 5)
         """
         print(f"📥 Descargando datos de la API (limitado a {limit} PDFs)...")
         try:
@@ -54,21 +58,22 @@ class PDFProcessor:
             return []
 
         downloaded_files = []
-
         for item in data:
             try:
                 if 'acf' not in item or 'archivo_ley' not in item['acf']:
                     continue
 
                 pdf_url = item['acf']['archivo_ley']
-                ley_nro = item['acf'].get('ley_nro', '').strip()
-                # Corregir formato del nombre
+                # Limpiamos el número de ley para quitar espacios y caracteres especiales
+                ley_nro = item['acf'].get('ley_nro', '').replace('PL No ', '').replace('/', '').strip()
                 pdf_name = f"PL-No-{ley_nro}2024-2025.pdf"
                 pdf_path = self.pdfs_dir / pdf_name
-                context_path = self.context_dir / f"PL-No-{ley_nro}2024-2025.json"
+                
+                print(f"📄 Procesando: {pdf_name}")
+                print(f"📝 Título: {item['acf'].get('titulo', 'Sin título')}")
+                print(f"📋 Descripción: {item['acf'].get('descripcion', 'Sin descripción')}\n")
 
-                # Solo descargar si el PDF no existe o si el contexto no existe
-                if not pdf_path.exists() or not context_path.exists():
+                if not pdf_path.exists():
                     print(f"📥 Descargando {pdf_name}...")
                     try:
                         pdf_response = requests.get(pdf_url, timeout=30)
@@ -81,7 +86,7 @@ class PDFProcessor:
                         print(f"❌ Error descargando {pdf_name}: {str(e)}")
                         continue
                 else:
-                    print(f"ℹ️ Ya existe el PDF y el contexto para: {pdf_name}")
+                    print(f"ℹ️ Ya existe el PDF: {pdf_name}")
 
                 downloaded_files.append({
                     'pdf_path': str(pdf_path),
@@ -98,8 +103,6 @@ class PDFProcessor:
 
     def process_pdfs_with_docling(self, pdf_files: List[Dict]):
         """Procesa los PDFs con DocLing y guarda el contexto"""
-        from docling.document_converter import DocumentConverter
-        
         for pdf_file in pdf_files:
             context_path = self.context_dir / f"PL-No-{pdf_file['ley_nro']}2024-2025.json"
             
@@ -193,4 +196,74 @@ class PDFProcessor:
                         contexts.append(json.load(f))
                 except Exception as e:
                     print(f"❌ Error leyendo contexto {context_path}: {str(e)}")
-        return contexts 
+        return contexts
+
+    def process_with_docling(self, pdf_path: str) -> str:
+        """Procesa un PDF con DocLing y retorna el contenido procesado"""
+        try:
+            print(f"🔄 Procesando PDF con DocLing: {pdf_path}")
+            
+            # Usar DocumentConverter de docling
+            converter = DocumentConverter()
+            result = converter.convert(pdf_path)
+            
+            # Extraer el texto en formato markdown
+            content = result.document.export_to_markdown()
+            
+            print(f"✅ PDF procesado exitosamente con DocLing")
+            return content
+            
+        except Exception as e:
+            print(f"❌ Error procesando PDF con DocLing: {str(e)}")
+            return ""
+
+    def process_pdf(self, pdf_url: str, metadata: dict, db: Session):
+        """Procesa un PDF y lo guarda en la base de datos"""
+        try:
+            # Extraer número de ley
+            ley_nro = metadata['ley_nro'].replace('PL No ', '').replace('/', '').strip()
+            
+            # Verificar si ya existe
+            existing_law = db.query(LawDocument).filter_by(law_number=ley_nro).first()
+            if existing_law:
+                print(f"ℹ️ La ley {ley_nro} ya existe en la base de datos")
+                return existing_law
+            
+            # Descargar PDF
+            pdf_name = f"PL-No-{ley_nro}2024-2025.pdf"
+            pdf_path = self.pdfs_dir / pdf_name
+            
+            if not pdf_path.exists():
+                print(f"📥 Descargando {pdf_name}...")
+                response = requests.get(pdf_url)
+                with open(pdf_path, 'wb') as f:
+                    f.write(response.content)
+                print(f"✅ PDF descargado: {pdf_name}")
+            
+            # Procesar con DocLing
+            content = self.process_with_docling(str(pdf_path))
+            
+            if not content:
+                print(f"⚠️ No se pudo extraer contenido del PDF: {pdf_name}")
+                return None
+            
+            # Guardar en la base de datos
+            law_doc = LawDocument(
+                law_number=ley_nro,
+                year="2024-2025",
+                title=metadata['titulo'],
+                description=metadata['descripcion'],
+                content=content,
+                pdf_path=str(pdf_path)
+            )
+            
+            db.add(law_doc)
+            db.commit()
+            print(f"✅ Ley {ley_nro} guardada en la base de datos")
+            
+            return law_doc
+            
+        except Exception as e:
+            print(f"❌ Error procesando PDF: {str(e)}")
+            db.rollback()  # Revertir cambios en caso de error
+            return None 

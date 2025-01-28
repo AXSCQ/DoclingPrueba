@@ -1,6 +1,6 @@
 from docling.document_converter import DocumentConverter
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from chatbot import PDFChatBot
@@ -8,6 +8,9 @@ from typing import List, Optional
 import json
 from pathlib import Path
 from datetime import datetime
+from config import get_db
+from models import LawDocument
+from sqlalchemy.orm import Session
 
 # Inicializar FastAPI
 app = FastAPI()
@@ -69,36 +72,21 @@ async def register_access(user: UserAccess):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/laws")
-async def get_laws():
+async def get_laws(db: Session = Depends(get_db)):
     """Retorna lista de proyectos de ley disponibles"""
     try:
-        laws = chatbot.pdf_processor.get_available_pdfs()
-        if not laws:
-            return {
-                "laws": [],
-                "message": "No hay proyectos de ley disponibles en este momento."
-            }
-            
-        formatted_laws = []
-        for law in laws:
-            formatted_law = {
-                "number": f"{law['ley_nro']}/2024-2025",
-                "title": law['titulo'],
-                "description": law['descripcion'],
-                "pdfUrl": f"https://diputados.gob.bo/wp-content/uploads/2025/01/PL-No-{law['ley_nro']}2024-2025.pdf"
-            }
-            formatted_laws.append(formatted_law)
-            
-        print(f"📚 Enviando {len(formatted_laws)} leyes al frontend")
+        laws = db.query(LawDocument).all()
         return {
-            "laws": formatted_laws
+            "laws": [{
+                "number": f"{law.law_number}/2024-2025",
+                "title": law.title,
+                "description": law.description,
+                "pdfUrl": f"https://diputados.gob.bo/wp-content/uploads/2025/01/PL-No-{law.law_number}2024-2025.pdf"
+            } for law in laws]
         }
     except Exception as e:
         print(f"❌ Error obteniendo leyes: {str(e)}")
-        return {
-            "laws": [],
-            "error": str(e)
-        }
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
