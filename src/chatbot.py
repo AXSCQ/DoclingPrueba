@@ -23,21 +23,19 @@ class PDFChatBot:
         api_url = "https://diputados.gob.bo/wp-json/wp/v2/ley?estado_de_ley=7&page=1&per_page=100&acf_format=standard"
         
         try:
-            # Obtener datos de la API
-            response = requests.get(api_url)
-            data = response.json()[:5]  # Limitamos a 5 PDFs
-            
             # Obtener sesión de DB
             db = next(get_db())
             
-            for item in data:
-                if 'acf' in item and 'archivo_ley' in item['acf']:
-                    # Procesar PDF y guardar en DB
-                    self.pdf_processor.process_pdf(
-                        pdf_url=item['acf']['archivo_ley'],
-                        metadata=item['acf'],
-                        db=db
-                    )
+            # Sincronizar con API
+            sync_result = self.pdf_processor.sync_with_api(api_url, db)
+            
+            if sync_result:
+                print(f"""
+                📊 Resumen de sincronización:
+                - PDFs eliminados: {sync_result['deleted']}
+                - PDFs nuevos: {sync_result['added']}
+                - Total actual: {sync_result['current_total']}
+                """)
             
             print("✅ Contexto actualizado en la base de datos")
             

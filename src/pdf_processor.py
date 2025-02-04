@@ -266,4 +266,68 @@ class PDFProcessor:
         except Exception as e:
             print(f"❌ Error procesando PDF: {str(e)}")
             db.rollback()  # Revertir cambios en caso de error
+            return None
+
+    def sync_with_api(self, api_url: str, db: Session):
+        """Sincroniza PDFs locales con la API"""
+        try:
+            print("🔄 Iniciando sincronización con API...")
+            
+            # 1. Obtener lista actual de la API
+            response = requests.get(api_url)
+            api_laws = response.json()
+            api_law_numbers = {
+                item['acf']['ley_nro'].replace('PL No ', '').replace('/', '').strip()
+                for item in api_laws if 'acf' in item and 'ley_nro' in item['acf']
+            }
+            print(f"📊 Leyes en API: {len(api_law_numbers)}")
+            
+            # 2. Obtener leyes locales
+            local_laws = db.query(LawDocument).all()
+            local_law_numbers = {law.law_number for law in local_laws}
+            print(f"📚 Leyes locales: {len(local_law_numbers)}")
+            
+            # 3. Identificar leyes a eliminar (están local pero no en API)
+            laws_to_delete = local_law_numbers - api_law_numbers
+            if laws_to_delete:
+                print(f"🗑️ Leyes a eliminar: {laws_to_delete}")
+                for law_number in laws_to_delete:
+                    # Eliminar de la base de datos
+                    db.query(LawDocument).filter_by(law_number=law_number).delete()
+                    
+                    # Eliminar PDF
+                    pdf_path = self.pdfs_dir / f"PL-No-{law_number}2024-2025.pdf"
+                    if pdf_path.exists():
+                        pdf_path.unlink()
+                        print(f"✅ Eliminado PDF: {pdf_path.name}")
+            
+            # 4. Identificar leyes nuevas (están en API pero no local)
+            laws_to_add = api_law_numbers - local_law_numbers
+            if laws_to_add:
+                print(f"📥 Leyes nuevas a procesar: {laws_to_add}")
+                for item in api_laws:
+                    if 'acf' not in item or 'ley_nro' not in item['acf']:
+                        continue
+                        
+                    ley_nro = item['acf']['ley_nro'].replace('PL No ', '').replace('/', '').strip()
+                    if ley_nro in laws_to_add:
+                        self.process_pdf(
+                            pdf_url=item['acf']['archivo_ley'],
+                            metadata=item['acf'],
+                            db=db
+                        )
+            
+            # 5. Confirmar cambios
+            db.commit()
+            print("✅ Sincronización completada")
+            
+            return {
+                'deleted': len(laws_to_delete),
+                'added': len(laws_to_add),
+                'current_total': len(api_law_numbers)
+            }
+            
+        except Exception as e:
+            print(f"❌ Error en sincronización: {str(e)}")
+            db.rollback()
             return None 
